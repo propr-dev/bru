@@ -29,6 +29,9 @@ public partial class MainWindow : Window
         _companion.PointReceived += (x, y, label) =>
             Dispatcher.Invoke(() => _overlay.ShowTargetAt(x, y, label));
 
+        _companion.AudioLevelChanged += level =>
+            Dispatcher.Invoke(() => _overlay.SetAudioLevel(level));
+
         SourceInitialized += OnSourceInitialized;
         Closing += OnClosing;
     }
