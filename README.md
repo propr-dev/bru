@@ -2,15 +2,8 @@
 
 > An AI screen companion that sees your screen, hears your voice, and points to what you're looking for — running silently in the background on Windows 11.
 
-<!--
-  DEMO VIDEO — add yours here:
-  1. Go to this README on GitHub and click the pencil (Edit) icon
-  2. Drag your .mp4 file anywhere into the editor — GitHub uploads it automatically
-  3. Copy the generated URL and replace the src below
-  4. Delete this comment block
+<video src="https://github.com/user-attachments/assets/101fd5d9-41cf-4921-813d-492c7054745d" autoplay loop muted playsinline width="100%"></video>
 
-<video src="YOUR_GITHUB_CDN_URL_HERE" autoplay loop muted playsinline width="100%"></video>
--->
 
 ![Demo screenshot](screenshot.png)
 
