@@ -2,8 +2,7 @@
 
 > An AI screen companion that sees your screen, hears your voice, and points to what you're looking for — running silently in the background on Windows 11.
 
-<video src="https://github.com/user-attachments/assets/101fd5d9-41cf-4921-813d-492c7054745d" autoplay loop muted playsinline width="100%"></video>
-
+<video src="https://github.com/user-attachments/assets/749430ff-b9d9-4014-8007-09b16f172b8e" autoplay loop muted playsinline width="100%"></video>
 
 ![Demo screenshot](screenshot.png)
 
