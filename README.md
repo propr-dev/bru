@@ -4,8 +4,6 @@
 
 <video src="https://github.com/user-attachments/assets/749430ff-b9d9-4014-8007-09b16f172b8e" autoplay loop muted playsinline width="100%"></video>
 
-![Demo screenshot](screenshot.png)
-
 ---
 
 ## What is this?
