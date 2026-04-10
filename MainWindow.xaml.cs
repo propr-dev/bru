@@ -32,6 +32,12 @@ public partial class MainWindow : Window
         _companion.AudioLevelChanged += level =>
             Dispatcher.Invoke(() => _overlay.SetAudioLevel(level));
 
+        _companion.FeedbackReceived += msg =>
+            Dispatcher.Invoke(() => _overlay.ShowFeedback(msg));
+
+        _companion.TranscriptConfirmed +=
+            () => Dispatcher.Invoke(() => _overlay.PulseSpinner());
+
         SourceInitialized += OnSourceInitialized;
         Closing += OnClosing;
     }

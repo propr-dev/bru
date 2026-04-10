@@ -20,6 +20,13 @@ public class ElevenLabsService : IDisposable
 
     public bool IsPlaying => _player?.PlaybackState == PlaybackState.Playing;
 
+    /// <summary>
+    /// Fires on the thread pool immediately before audio playback begins —
+    /// after the MP3 has been fetched and decoded. CompanionManager transitions
+    /// to AppState.Speaking here so the spinner runs through the entire HTTP fetch.
+    /// </summary>
+    public event Action? PlaybackStarting;
+
     public ElevenLabsService(AppSettings settings)
     {
         _settings = settings;
@@ -100,6 +107,7 @@ public class ElevenLabsService : IDisposable
             tcs.TrySetCanceled();
         });
 
+        PlaybackStarting?.Invoke();
         _player.Play();
         await tcs.Task;
     }

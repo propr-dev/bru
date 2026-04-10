@@ -58,16 +58,24 @@
             <Rectangle x:Name="Bar4" Width="2" Height="5" Fill="#FF3380FF" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
         </StackPanel>
 
-        <!-- Processing spinner — rotating dashed ring shown while waiting for Claude's response -->
+        <!-- Processing spinner — rotating dashed ring shown while waiting for Claude's response.
+             SpinnerScale allows a throb pulse when transcript is confirmed. -->
         <Grid x:Name="ProcessingSpinner"
               Width="22" Height="22"
               Canvas.Left="0" Canvas.Top="0"
-              Visibility="Collapsed">
-            <Ellipse Width="18" Height="18"
-                     Stroke="#FF3380FF" StrokeThickness="2.5"
+              Visibility="Collapsed"
+              RenderTransformOrigin="0.5,0.5">
+            <Grid.RenderTransform>
+                <ScaleTransform x:Name="SpinnerScale" ScaleX="1" ScaleY="1"/>
+            </Grid.RenderTransform>
+            <Ellipse x:Name="SpinnerRing" Width="18" Height="18"
+                     StrokeThickness="2.5"
                      StrokeDashArray="3.5 1.5"
                      Fill="Transparent"
                      RenderTransformOrigin="0.5,0.5">
+                <Ellipse.Stroke>
+                    <SolidColorBrush x:Name="SpinnerStrokeBrush" Color="#3380FF"/>
+                </Ellipse.Stroke>
                 <Ellipse.Effect>
                     <DropShadowEffect Color="#3380FF" BlurRadius="6" ShadowDepth="0" Opacity="0.6"/>
                 </Ellipse.Effect>

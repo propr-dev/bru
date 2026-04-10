@@ -32,6 +32,11 @@ public class AssemblyAIService : IAsyncDisposable
 
     public event Action<string>? InterimTranscriptReceived;
     public event Action<string>? FinalTranscriptReceived;
+    /// <summary>
+    /// Fires when the WebSocket receive loop exits for any reason (clean close, error, cancellation).
+    /// CompanionManager uses this to unblock the transcript TCS immediately instead of timing out.
+    /// </summary>
+    public event Action? ReceiveLoopEnded;
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
@@ -106,6 +111,12 @@ public class AssemblyAIService : IAsyncDisposable
         {
             Logger.Log($"[ASR] WebSocket error: {ex.Message}");
         }
+        finally
+        {
+            // Always fire so CompanionManager can unblock the TCS immediately
+            // rather than waiting for the full 5-second timeout.
+            ReceiveLoopEnded?.Invoke();
+        }
     }
 
     private void ParseMessage(string json)
@@ -129,12 +140,16 @@ public class AssemblyAIService : IAsyncDisposable
                     var transcript = node["transcript"]?.GetValue<string>() ?? "";
                     var endOfTurn = node["end_of_turn"]?.GetValue<bool>() ?? false;
 
-                    if (!string.IsNullOrWhiteSpace(transcript))
+                    if (endOfTurn)
                     {
-                        if (endOfTurn)
-                            FinalTranscriptReceived?.Invoke(transcript);
-                        else
-                            InterimTranscriptReceived?.Invoke(transcript);
+                        // Always fire for final turns, including empty ones (silence).
+                        // CompanionManager resolves the TCS immediately; empty string
+                        // is treated as "nothing heard" upstream.
+                        FinalTranscriptReceived?.Invoke(transcript);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(transcript))
+                    {
+                        InterimTranscriptReceived?.Invoke(transcript);
                     }
                     break;
 

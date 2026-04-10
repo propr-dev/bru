@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using WpfColor = System.Windows.Media.Color;
 using WpfRect = System.Windows.Shapes.Rectangle;
 using System.Windows.Threading;
 using ClickyWindows.Helpers;
@@ -366,6 +367,79 @@ public partial class OverlayWindow : Window
         // Show dot only if the app isn't in a state that uses a different indicator
         if (_appState != AppState.Listening && _appState != AppState.Processing)
             CursorFollower.Visibility = Visibility.Visible;
+    }
+
+    // ── Feedback bubble (silent failures, error messages) ───────────────────
+
+    /// <summary>
+    /// Shows a transient message bubble near the cursor dot — used for silent failures
+    /// so the user always knows what happened. Reuses the same TargetLabel element.
+    /// </summary>
+    public void ShowFeedback(string message)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _labelTimer?.Stop();
+
+            // Position near current dot location
+            System.Windows.Controls.Canvas.SetLeft(TargetLabel, _dotX + 20);
+            System.Windows.Controls.Canvas.SetTop(TargetLabel,  _dotY + 12);
+
+            TargetLabelText.Text    = message;
+            TargetLabel.Opacity     = 0;
+            TargetLabel.Visibility  = Visibility.Visible;
+
+            var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.25));
+            TargetLabel.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+
+            // Hold 3 s then fade out; don't change dot state
+            _labelTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3.25) };
+            _labelTimer.Tick += (_, _) =>
+            {
+                _labelTimer!.Stop();
+                var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromSeconds(0.5));
+                fadeOut.Completed += (_, _) => TargetLabel.Visibility = Visibility.Collapsed;
+                TargetLabel.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+            };
+            _labelTimer.Start();
+        });
+    }
+
+    // ── Spinner transcript-confirmation pulse ───────────────────────────────
+
+    /// <summary>
+    /// Brief scale-throb + pink color flash on the spinner to signal "I heard you."
+    /// Called the moment AssemblyAI delivers the final transcript.
+    /// </summary>
+    public void PulseSpinner()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (ProcessingSpinner.Visibility != Visibility.Visible) return;
+
+            // Scale: 1.0 → 1.45 → 1.0 over 0.5 s
+            var scaleAnim = new DoubleAnimationUsingKeyFrames();
+            scaleAnim.KeyFrames.Add(new LinearDoubleKeyFrame(1.0,  KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            scaleAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.45, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.18)))
+                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+            scaleAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,  KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.5)))
+                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } });
+
+            SpinnerScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
+            SpinnerScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
+
+            // Color: blue → light pink → blue over the same duration
+            var colorAnim = new ColorAnimationUsingKeyFrames();
+            colorAnim.KeyFrames.Add(new LinearColorKeyFrame(
+                WpfColor.FromRgb(0x33, 0x80, 0xFF), KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            colorAnim.KeyFrames.Add(new EasingColorKeyFrame(
+                WpfColor.FromRgb(0xFF, 0x8A, 0xBA), KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.18)))
+                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+            colorAnim.KeyFrames.Add(new LinearColorKeyFrame(
+                WpfColor.FromRgb(0x33, 0x80, 0xFF), KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.5))));
+
+            SpinnerStrokeBrush.BeginAnimation(SolidColorBrush.ColorProperty, colorAnim);
+        });
     }
 
     // ── Pulse ring animation ────────────────────────────────────────────────

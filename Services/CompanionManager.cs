@@ -19,12 +19,18 @@ public class CompanionManager : IAsyncDisposable
 
     private AssemblyAIService? _assemblyAI;
     private CancellationTokenSource? _sessionCts;
-    // Stores the final transcript as soon as AssemblyAI delivers it (may arrive before key release)
-    private string? _pendingTranscript;
+    // Single TCS created at key-press time, resolved by FinalTranscriptReceived.
+    // Using one TCS for the full lifetime of a session eliminates the race condition
+    // where end_of_turn fires between our null-check and TCS subscription.
+    private TaskCompletionSource<string>? _transcriptTcs;
 
     public event Action<AppState>? StateChanged;
     public event Action<double, double, string>? PointReceived;
     public event Action<float>? AudioLevelChanged;
+    /// <summary>Fires with a short Turkish message when a pipeline stage fails silently.</summary>
+    public event Action<string>? FeedbackReceived;
+    /// <summary>Fires the instant a final transcript arrives — triggers the spinner pulse.</summary>
+    public event Action? TranscriptConfirmed;
 
     private AppState _state = AppState.Idle;
     private AppState State
@@ -48,6 +54,9 @@ public class CompanionManager : IAsyncDisposable
         _tts = new ElevenLabsService(settings);
 
         _audio.PowerLevelChanged += level => AudioLevelChanged?.Invoke(level);
+
+        // Fix 1: transition to Speaking only when audio literally starts, not before the HTTP fetch
+        _tts.PlaybackStarting += () => State = AppState.Speaking;
     }
 
     // ── Push-to-talk lifecycle ──────────────────────────────────────────────
@@ -73,21 +82,28 @@ public class CompanionManager : IAsyncDisposable
         Logger.Log("[Hotkey] Push-to-talk PRESSED");
         State = AppState.Listening;
         _sessionCts = new CancellationTokenSource();
-        _pendingTranscript = null;
+
+        // Create the TCS *before* audio starts so FinalTranscriptReceived can never
+        // fire between our check and our subscription — the race condition is gone.
+        // RunContinuationsAsynchronously prevents deadlocks if TrySetResult is called
+        // from the WebSocket receive-loop thread while we're awaiting on the UI thread.
+        _transcriptTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         _audio.Start();
         Logger.Log("[Audio] WASAPI capture started");
 
         _assemblyAI = new AssemblyAIService(_settings.AssemblyAiApiKey);
         _assemblyAI.InterimTranscriptReceived += text => Logger.Log($"[ASR] Interim: {text}");
-
-        // Subscribe to final transcript NOW (before key release) so we never miss it.
-        // AssemblyAI may fire end_of_turn=true while the key is still held.
         _assemblyAI.FinalTranscriptReceived += text =>
         {
-            Logger.Log($"[ASR] Final transcript (captured): \"{text}\"");
-            _pendingTranscript = text;
+            Logger.Log($"[ASR] Final transcript: \"{text}\"");
+            // Resolve for any end_of_turn, including empty (silence). Empty string is
+            // handled as "nothing heard" at the await site — no 5-second wait needed.
+            _transcriptTcs?.TrySetResult(text);
         };
+        // When the socket closes (cleanly or via 3006 error) without a final Turn,
+        // unblock the TCS immediately so we don't wait 5+ seconds for a timeout.
+        _assemblyAI.ReceiveLoopEnded += () => _transcriptTcs?.TrySetResult("");
 
         try
         {
@@ -101,6 +117,7 @@ public class CompanionManager : IAsyncDisposable
             Logger.Error($"AssemblyAI connection failed: {ex.Message}");
             _audio.Stop();
             State = AppState.Idle;
+            FeedbackReceived?.Invoke("bağlanamadım");
         }
     }
 
@@ -133,46 +150,74 @@ public class CompanionManager : IAsyncDisposable
             screenshots = [];
         }
 
-        // Get final transcript.
-        // It may have already arrived while the key was still held (end_of_turn auto-detected).
+        // Unified transcript path — the TCS was subscribed before audio started, so whether
+        // end_of_turn fired while the key was held or fires now, TrySetResult already ran or will.
+        // No dual code paths, no race window.
         string transcript = "";
-        if (_pendingTranscript != null)
+        if (_transcriptTcs != null && _assemblyAI != null)
         {
-            // Already have it — use immediately, no need to wait
-            transcript = _pendingTranscript;
-            Logger.Log($"[ASR] Using pre-captured transcript: \"{transcript}\"");
-        }
-        else if (_assemblyAI != null)
-        {
-            // Not yet received — wait for it (with a TCS that the already-subscribed handler fills)
-            var tcs = new TaskCompletionSource<string>();
-            _assemblyAI.FinalTranscriptReceived += text => tcs.TrySetResult(text);
-
+            // Always send force_end_utterance after stopping audio to close the turn promptly.
+            // If end_of_turn already fired this is a no-op from AssemblyAI's perspective.
             try
             {
-                Logger.Log("[ASR] No transcript yet — sending force_end_utterance, waiting...");
+                Logger.Log("[ASR] Sending force_end_utterance...");
                 await _assemblyAI.FinalizeAsync(_sessionCts!.Token);
-                transcript = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(8), _sessionCts!.Token);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[ASR] FinalizeAsync failed (non-fatal): {ex.Message}");
+            }
+
+            // First attempt: 5 s
+            try
+            {
+                transcript = await _transcriptTcs.Task.WaitAsync(TimeSpan.FromSeconds(5), _sessionCts!.Token);
+                Logger.Info($"Heard: \"{transcript}\"");
+                TranscriptConfirmed?.Invoke();
             }
             catch (TimeoutException)
             {
-                Logger.Error("No transcript received after 8s — check your microphone and AssemblyAI key");
+                // Retry once — send another force_end_utterance and wait 3 more seconds.
+                // Covers the case where AssemblyAI needed a moment longer to process.
+                Logger.Log("[ASR] No transcript after 5s — retrying with second force_end_utterance...");
+                try
+                {
+                    await _assemblyAI.FinalizeAsync(_sessionCts!.Token);
+                    transcript = await _transcriptTcs.Task.WaitAsync(TimeSpan.FromSeconds(3), _sessionCts!.Token);
+                    Logger.Info($"Heard (retry): \"{transcript}\"");
+                    TranscriptConfirmed?.Invoke();
+                }
+                catch (TimeoutException)
+                {
+                    Logger.Error("[ASR] No transcript after 8s total — giving up");
+                    FeedbackReceived?.Invoke("tam duyamadım seni :(");
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[ASR] Retry error: {ex.Message}");
+                    FeedbackReceived?.Invoke("tam duyamadım seni :(");
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                Logger.Error($"Transcription error: {ex.Message}");
+                Logger.Error($"[ASR] Transcription error: {ex.Message}");
+                FeedbackReceived?.Invoke("tam duyamadım seni :(");
             }
         }
 
         if (!string.IsNullOrWhiteSpace(transcript))
         {
-            Logger.Info($"Heard: \"{transcript}\"");
             await ProcessResponseAsync(transcript, screenshots);
         }
         else
         {
             Logger.Log("[Pipeline] No transcript — returning to Idle");
+            // Show feedback if the session ended cleanly but with no usable speech —
+            // i.e. not a user cancellation, and feedback not already shown by a timeout catch.
+            if (!_sessionCts!.IsCancellationRequested)
+                FeedbackReceived?.Invoke("tam duyamadım seni :(");
             State = AppState.Idle;
         }
 
@@ -215,6 +260,7 @@ public class CompanionManager : IAsyncDisposable
         catch (Exception ex)
         {
             Logger.Error($"Claude API error: {ex.Message}");
+            FeedbackReceived?.Invoke("üzgünüm yanıt veremedim");
             State = AppState.Idle;
             return;
         }
@@ -271,15 +317,25 @@ public class CompanionManager : IAsyncDisposable
 
         if (!string.IsNullOrWhiteSpace(fullText))
         {
-            State = AppState.Speaking;
+            // State transitions to Speaking inside ElevenLabsService.PlaybackStarting
+            // (right before Play()), so the spinner runs through the full HTTP fetch.
             try
             {
                 await _tts.SpeakAsync(fullText, _sessionCts!.Token);
                 Logger.Log("[TTS] Playback complete");
             }
+            catch (OperationCanceledException)
+            {
+                // Interrupted by user pressing hotkey again — normal flow
+            }
             catch (Exception ex)
             {
                 Logger.Error($"TTS failed: {ex.Message}");
+                // Claude responded but we can't play it — show the first ~30 chars as text
+                var preview = fullText.Length > 30
+                    ? fullText[..30].TrimEnd() + "…"
+                    : fullText;
+                FeedbackReceived?.Invoke(preview);
             }
         }
 
