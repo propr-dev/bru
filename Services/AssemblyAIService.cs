@@ -30,6 +30,14 @@ public class AssemblyAIService : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private int _messagesReceived;
 
+    // Audio arriving before the WebSocket is open is buffered here and flushed on
+    // connect. Without this, the first ~0.5–1.5 s of speech (everything said while
+    // the connection was still being established) was silently dropped — which is
+    // why transcripts often missed the first word or two.
+    private readonly Queue<byte[]> _preConnectBuffer = new();
+    private const int MaxBufferedChunks = 150; // ≈ 9 s of audio — plenty
+    private readonly object _bufferLock = new();
+
     public event Action<string>? InterimTranscriptReceived;
     public event Action<string>? FinalTranscriptReceived;
     /// <summary>
@@ -56,11 +64,34 @@ public class AssemblyAIService : IAsyncDisposable
         await _ws.ConnectAsync(uri, _cts.Token);
 
         _ = ReceiveLoopAsync(_cts.Token);
+
+        // Flush any audio captured while we were still connecting, in order.
+        byte[][] buffered;
+        lock (_bufferLock)
+        {
+            buffered = _preConnectBuffer.ToArray();
+            _preConnectBuffer.Clear();
+        }
+        if (buffered.Length > 0)
+        {
+            Logger.Log($"[ASR] Flushing {buffered.Length} pre-connect audio chunk(s)");
+            foreach (var chunk in buffered)
+                await _ws.SendAsync(new ArraySegment<byte>(chunk), WebSocketMessageType.Binary, true, _cts.Token);
+        }
     }
 
     public async Task SendAudioAsync(byte[] pcm16Chunk, CancellationToken ct = default)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        if (_ws?.State != WebSocketState.Open)
+        {
+            // Not connected yet — buffer so the start of the sentence isn't lost.
+            lock (_bufferLock)
+            {
+                if (_preConnectBuffer.Count < MaxBufferedChunks)
+                    _preConnectBuffer.Enqueue(pcm16Chunk);
+            }
+            return;
+        }
         await _ws.SendAsync(new ArraySegment<byte>(pcm16Chunk), WebSocketMessageType.Binary, true, ct);
     }
 
@@ -71,8 +102,11 @@ public class AssemblyAIService : IAsyncDisposable
             Logger.Log("[ASR] FinalizeAsync: WebSocket not open");
             return;
         }
-        // v3 control message — force end of current turn
-        var msg = JsonSerializer.Serialize(new { force_end_utterance = true });
+        // v3 control message — force end of the current turn. The protocol requires a
+        // "type" field: the old {"force_end_utterance":true} shape was rejected by the
+        // server with error 3006 ("Invalid Message Type") on EVERY session, killing the
+        // socket instead of finalizing the turn.
+        var msg = JsonSerializer.Serialize(new { type = "ForceEndpoint" });
         Logger.Log($"[ASR] Sending: {msg}");
         var bytes = Encoding.UTF8.GetBytes(msg);
         await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, ct);

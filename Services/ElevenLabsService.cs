@@ -11,7 +11,7 @@ namespace ClickyWindows.Services;
 /// Synthesizes speech via ElevenLabs TTS API and plays it back using NAudio.
 /// Mirrors the ElevenLabsTTSClient in macOS Clicky.
 /// </summary>
-public class ElevenLabsService : IDisposable
+public class ElevenLabsService : ITtsService
 {
     private static readonly HttpClient Http = new();
     private readonly AppSettings _settings;

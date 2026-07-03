@@ -15,30 +15,35 @@
 
     <Canvas x:Name="OverlayCanvas">
 
+        <!-- Temporary screen drawings (highlight boxes, arrows, trendlines, notes).
+             Populated in code; sits below the buddy so Bru always draws on top. -->
+        <Canvas x:Name="AnnotationCanvas"/>
+
         <!-- Main cursor dot — trails the mouse with spring physics, flies to targets.
              ScaleTransform allows a grow-to-1.3x pulse during flight. -->
         <Grid x:Name="CursorFollower" Width="32" Height="32"
               Canvas.Left="0" Canvas.Top="0"
               RenderTransformOrigin="0.5,0.5">
             <Grid.RenderTransform>
-                <ScaleTransform x:Name="DotScale" ScaleX="1" ScaleY="1"/>
+                <TransformGroup>
+                    <ScaleTransform x:Name="DotScale" ScaleX="1" ScaleY="1"/>
+                    <RotateTransform x:Name="DotRotate" Angle="-35"/>
+                    <TranslateTransform x:Name="DotTranslate"/>
+                </TransformGroup>
             </Grid.RenderTransform>
-            <!-- Outer glow ring -->
-            <Ellipse Width="32" Height="32"
-                     Stroke="#403380FF" StrokeThickness="2"
-                     Fill="Transparent">
-                <Ellipse.Effect>
-                    <BlurEffect Radius="4"/>
-                </Ellipse.Effect>
-            </Ellipse>
-            <!-- Inner solid dot -->
-            <Ellipse Width="12" Height="12"
-                     HorizontalAlignment="Center" VerticalAlignment="Center"
-                     Fill="#CC3380FF">
-                <Ellipse.Effect>
-                    <DropShadowEffect Color="#3380FF" BlurRadius="8" ShadowDepth="0" Opacity="0.9"/>
-                </Ellipse.Effect>
-            </Ellipse>
+            <!-- The buddy: Bru's COMET — a glowing teardrop whose tail streams behind
+                 its direction of travel. Nose points up at 0°, so the existing
+                 tangent-rotation math steers it naturally; rests at -35° like a cursor.
+                 Deliberately distinct from Clicky's triangle. -->
+            <Path Fill="#F200E5FF"
+                  Data="M 16,5 C 20.1,5 23.2,8.1 23.2,12 C 23.2,15.5 19.6,18.6 17,26 C 16.7,27 15.3,27 15,26 C 12.4,18.6 8.8,15.5 8.8,12 C 8.8,8.1 11.9,5 16,5 Z">
+                <Path.Effect>
+                    <DropShadowEffect Color="#00E5FF" BlurRadius="8" ShadowDepth="0" Opacity="0.9"/>
+                </Path.Effect>
+            </Path>
+            <!-- bright core inside the comet head — gives it a "lit from within" eye -->
+            <Ellipse Width="7" Height="7" Fill="#FFFFFF" Opacity="0.85"
+                     HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,8.5,0,0"/>
         </Grid>
 
         <!-- Audio waveform — 5 bars that react to mic level during Listening state.
@@ -49,13 +54,13 @@
                     Visibility="Collapsed"
                     Height="20">
             <StackPanel.Effect>
-                <DropShadowEffect Color="#3380FF" BlurRadius="6" ShadowDepth="0" Opacity="0.6"/>
+                <DropShadowEffect Color="#00E5FF" BlurRadius="6" ShadowDepth="0" Opacity="0.6"/>
             </StackPanel.Effect>
-            <Rectangle x:Name="Bar0" Width="2" Height="5" Fill="#FF3380FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
-            <Rectangle x:Name="Bar1" Width="2" Height="5" Fill="#FF3380FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
-            <Rectangle x:Name="Bar2" Width="2" Height="5" Fill="#FF3380FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
-            <Rectangle x:Name="Bar3" Width="2" Height="5" Fill="#FF3380FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
-            <Rectangle x:Name="Bar4" Width="2" Height="5" Fill="#FF3380FF" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
+            <Rectangle x:Name="Bar0" Width="2" Height="5" Fill="#FF00E5FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
+            <Rectangle x:Name="Bar1" Width="2" Height="5" Fill="#FF00E5FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
+            <Rectangle x:Name="Bar2" Width="2" Height="5" Fill="#FF00E5FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
+            <Rectangle x:Name="Bar3" Width="2" Height="5" Fill="#FF00E5FF" Margin="0,0,2,0" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
+            <Rectangle x:Name="Bar4" Width="2" Height="5" Fill="#FF00E5FF" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1"/>
         </StackPanel>
 
         <!-- Processing spinner — rotating dashed ring shown while waiting for Claude's response.
@@ -74,10 +79,10 @@
                      Fill="Transparent"
                      RenderTransformOrigin="0.5,0.5">
                 <Ellipse.Stroke>
-                    <SolidColorBrush x:Name="SpinnerStrokeBrush" Color="#3380FF"/>
+                    <SolidColorBrush x:Name="SpinnerStrokeBrush" Color="#00E5FF"/>
                 </Ellipse.Stroke>
                 <Ellipse.Effect>
-                    <DropShadowEffect Color="#3380FF" BlurRadius="6" ShadowDepth="0" Opacity="0.6"/>
+                    <DropShadowEffect Color="#00E5FF" BlurRadius="6" ShadowDepth="0" Opacity="0.6"/>
                 </Ellipse.Effect>
                 <Ellipse.RenderTransform>
                     <RotateTransform x:Name="SpinnerRotate" Angle="0"/>
@@ -91,7 +96,7 @@
               Visibility="Collapsed">
             <!-- Pulsing outer ring -->
             <Ellipse x:Name="PulseRing" Width="48" Height="48"
-                     Stroke="#FF3380FF" StrokeThickness="2"
+                     Stroke="#FF00E5FF" StrokeThickness="2"
                      Fill="Transparent" Opacity="0">
                 <Ellipse.RenderTransform>
                     <ScaleTransform x:Name="PulseScale" CenterX="24" CenterY="24"/>
@@ -100,30 +105,36 @@
             <!-- Center dot — the cursor rests here while pointing -->
             <Ellipse Width="16" Height="16"
                      HorizontalAlignment="Center" VerticalAlignment="Center"
-                     Fill="#FF3380FF">
+                     Fill="#FF00E5FF">
                 <Ellipse.Effect>
-                    <DropShadowEffect Color="#3380FF" BlurRadius="12" ShadowDepth="0" Opacity="1"/>
+                    <DropShadowEffect Color="#00E5FF" BlurRadius="12" ShadowDepth="0" Opacity="1"/>
                 </Ellipse.Effect>
             </Ellipse>
         </Grid>
 
-        <!-- Utterance label — fades in on arrival, holds 3 s, fades out before return flight -->
+        <!-- Speech bubble — Clicky-style solid glowing pill. Text streams in character
+             by character; the bubble pops in with a scale bounce and a bright glow
+             that settles (a "materializing" effect, ported from the original). -->
         <Border x:Name="TargetLabel"
                 Canvas.Left="0" Canvas.Top="0"
                 Visibility="Collapsed"
                 Opacity="0"
-                Background="#CC101211"
+                Background="#00E5FF"
                 CornerRadius="6"
                 Padding="8,4"
-                BorderBrush="#443380FF" BorderThickness="1">
+                RenderTransformOrigin="0,0.5">
+            <Border.RenderTransform>
+                <ScaleTransform x:Name="LabelScale" ScaleX="1" ScaleY="1"/>
+            </Border.RenderTransform>
             <Border.Effect>
-                <DropShadowEffect Color="#3380FF" BlurRadius="8" ShadowDepth="0" Opacity="0.4"/>
+                <DropShadowEffect Color="#00E5FF" BlurRadius="8" ShadowDepth="0" Opacity="0.55"/>
             </Border.Effect>
             <TextBlock x:Name="TargetLabelText"
-                       Foreground="#ECEEED"
-                       FontSize="12"
+                       Foreground="#062028"
+                       FontSize="11.5"
+                       FontWeight="SemiBold"
                        FontFamily="Segoe UI"
-                       MaxWidth="200"
+                       MaxWidth="220"
                        TextWrapping="Wrap"/>
         </Border>
 

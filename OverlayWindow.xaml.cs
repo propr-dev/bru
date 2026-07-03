@@ -1,7 +1,8 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using WpfColor = System.Windows.Media.Color;
 using WpfRect = System.Windows.Shapes.Rectangle;
 using System.Windows.Threading;
@@ -28,15 +29,29 @@ public partial class OverlayWindow : Window
     private const double CursorOffsetX =  35.0;
     private const double CursorOffsetY = -25.0;
 
-    // Spring: k=300 → ω₀≈17 rad/s → period ≈ 0.37 s; ζ=0.72 → slight underdamp
-    private const double SpringK    = 300.0;
-    private const double SpringDamp =  25.0;
+    // Spring: tuned for a smooth, lightly-trailing follow (ζ≈0.85 — silky, barely any bounce).
+    private const double SpringK    = 230.0;
+    private const double SpringDamp =  26.0;
 
-    // ── Flight animation (dot flies to target) ──────────────────────────────
+    // ── Flight animation (buddy flies a quadratic bezier arc to the target) ──
     private double _flightStartX, _flightStartY;
     private double _flightTargetX, _flightTargetY;
+    private double _flightControlX, _flightControlY; // bezier control point (arc apex)
     private double _flightElapsed, _flightDuration;
     private string _flightLabel = "";
+    private bool   _isReturningToCursor;              // true on the flight back
+    private double _returnStartCursorX, _returnStartCursorY; // cancel-if-moved reference
+
+    // ── Speech bubble streaming (chars appear one by one, like speech) ───────
+    private string _bubbleFullText = "";
+    private int    _bubbleShownChars;
+    private double _nextCharAtSeconds;   // render-clock time for the next character
+    private double _bubbleHideAtSeconds; // render-clock time to fade + fly back
+    private bool   _welcomeActive;       // "hey! i'm bru" follows the buddy while shown
+    private bool   _welcomePlayed;
+    private double _firstFrameSeconds = -1;
+    private double _nextTopmostCheck;    // re-assert HWND_TOPMOST twice a second
+    private IntPtr _hwnd;
 
     // ── Audio waveform (Listening state) ────────────────────────────────────
     // Bar relative heights from original Clicky: center bar tallest.
@@ -45,9 +60,6 @@ public partial class OverlayWindow : Window
     private float  _audioLevel;
     private double _wavePhase;
 
-    // ── Label hold timer ────────────────────────────────────────────────────
-    private DispatcherTimer? _labelTimer;
-
     // ── Utterance phrases (same pool as original Clicky) ───────────────────
     private static readonly string[] Utterances =
     [
@@ -55,8 +67,11 @@ public partial class OverlayWindow : Window
     ];
     private static readonly Random Rng = new();
 
-    // ── Timers ──────────────────────────────────────────────────────────────
-    private readonly DispatcherTimer _cursorTimer;
+    // ── Frame-synced render loop ────────────────────────────────────────────
+    // CompositionTarget.Rendering fires once per composition frame (60/120/144 Hz),
+    // perfectly aligned with the compositor — far smoother than a DispatcherTimer,
+    // which fires at best-effort intervals and visibly micro-stutters.
+    private double _lastRenderSeconds = -1;
 
     public OverlayWindow()
     {
@@ -64,19 +79,14 @@ public partial class OverlayWindow : Window
         SourceInitialized += OnSourceInitialized;
 
         _waveformBars = [Bar0, Bar1, Bar2, Bar3, Bar4];
-
-        _cursorTimer = new DispatcherTimer(DispatcherPriority.Render)
-        {
-            Interval = TimeSpan.FromMilliseconds(16), // ~60 fps
-        };
-        _cursorTimer.Tick += OnCursorTick;
     }
 
     // ── Win32 overlay setup ─────────────────────────────────────────────────
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
-        var hwnd = new WindowInteropHelper(this).Handle;
+        _hwnd = new WindowInteropHelper(this).Handle;
+        var hwnd = _hwnd;
 
         int exStyle = Win32.GetWindowLong(hwnd, Win32.GWL_EXSTYLE);
         exStyle |= Win32.WS_EX_LAYERED | Win32.WS_EX_TRANSPARENT | Win32.WS_EX_NOACTIVATE;
@@ -95,14 +105,23 @@ public partial class OverlayWindow : Window
         Width  = screen.Bounds.Width  / dpiScale;
         Height = screen.Bounds.Height / dpiScale;
 
-        _cursorTimer.Start();
+        CompositionTarget.Rendering += OnRendering;
+
+        // Gentle 2-second fade-in of the buddy on launch (original Clicky charm).
+        CursorFollower.BeginAnimation(UIElement.OpacityProperty,
+            new DoubleAnimation(0, 1, TimeSpan.FromSeconds(2.0)));
     }
 
-    // ── Main tick: spring physics + flight animation + waveform bars ─────────
+    // ── Per-frame update: spring physics + flight animation + waveform bars ──
 
-    private void OnCursorTick(object? sender, EventArgs e)
+    private void OnRendering(object? sender, EventArgs e)
     {
-        const double dt = 0.016;
+        // Real elapsed time from the compositor clock → frame-rate-independent motion.
+        double now = (e as RenderingEventArgs)?.RenderingTime.TotalSeconds ?? 0;
+        double dt = _lastRenderSeconds < 0 ? 0.016 : now - _lastRenderSeconds;
+        _lastRenderSeconds = now;
+        if (dt <= 0) return;             // duplicate frame — skip
+        if (dt > 0.05) dt = 0.05;        // clamp after a stall so the spring can't explode
 
         Win32.GetCursorPos(out var pt);
         var dpiScale = CoordinateHelper.GetDpiScale();
@@ -113,34 +132,87 @@ public partial class OverlayWindow : Window
         double targetX = cursorWpfX + CursorOffsetX;
         double targetY = cursorWpfY + CursorOffsetY;
 
-        // Snap to cursor on very first tick so the dot doesn't fly in from (0,0)
+        // Snap to cursor on very first frame so the dot doesn't fly in from (0,0)
         if (!_initialized)
         {
             _dotX = targetX;
             _dotY = targetY;
             _initialized = true;
+            _firstFrameSeconds = now;
+        }
+
+        // Windows lets newly opened/maximised apps (Excel, browsers, games) push
+        // past a topmost window, and the flag can silently drop — the buddy would
+        // vanish behind them. Re-assert HWND_TOPMOST twice a second so Bru is
+        // ALWAYS in front, exactly like every serious screen-overlay tool does.
+        if (now >= _nextTopmostCheck && _hwnd != IntPtr.Zero)
+        {
+            _nextTopmostCheck = now + 0.5;
+            Win32.SetWindowPos(_hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+                Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
+        }
+
+        // First-launch charm (ported from the original): "hey! i'm bru" streams
+        // into a bubble beside the buddy shortly after startup.
+        if (!_welcomePlayed && _appState == AppState.Idle && now - _firstFrameSeconds > 0.9)
+        {
+            _welcomePlayed = true;
+            _welcomeActive = true;
+            StartBubble("hey! i'm bru", holdSeconds: 2.0, now);
         }
 
         // ── Advance dot based on state ──────────────────────────────────────
         switch (_dotState)
         {
             case DotState.FollowingCursor:
-                // Spring physics — runs even when dot is visually hidden (waveform/spinner shown)
-                // so the spring is warmed up and the dot appears smoothly when re-shown.
-                _dotVX += ((targetX - _dotX) * SpringK - _dotVX * SpringDamp) * dt;
-                _dotVY += ((targetY - _dotY) * SpringK - _dotVY * SpringDamp) * dt;
-                _dotX  += _dotVX * dt;
-                _dotY  += _dotVY * dt;
+                // Sub-step the spring at a fixed 240 Hz so integration stays smooth and
+                // identical whether the display runs at 60, 120 or 144 Hz.
+                double remaining = dt;
+                const double h = 1.0 / 240.0;
+                while (remaining > 1e-6)
+                {
+                    double step = Math.Min(h, remaining);
+                    _dotVX += ((targetX - _dotX) * SpringK - _dotVX * SpringDamp) * step;
+                    _dotVY += ((targetY - _dotY) * SpringK - _dotVY * SpringDamp) * step;
+                    _dotX  += _dotVX * step;
+                    _dotY  += _dotVY * step;
+                    remaining -= step;
+                }
                 break;
 
             case DotState.FlyingToTarget:
+                // On the return flight, moving the mouse >100px cancels the animation
+                // and snaps straight back to cursor following (ported from the original).
+                if (_isReturningToCursor)
+                {
+                    double moved = Math.Sqrt(
+                        (cursorWpfX - _returnStartCursorX) * (cursorWpfX - _returnStartCursorX) +
+                        (cursorWpfY - _returnStartCursorY) * (cursorWpfY - _returnStartCursorY));
+                    if (moved > 100)
+                    {
+                        ResumeFollowingCursor(cancelPointer: true);
+                        break;
+                    }
+                }
+
                 _flightElapsed += dt;
                 double p = Math.Min(_flightElapsed / _flightDuration, 1.0);
 
                 // Smoothstep easing: ease = 3t²−2t³
                 double ease = p * p * (3.0 - 2.0 * p);
-                _dotX = _flightStartX + (_flightTargetX - _flightStartX) * ease;
-                _dotY = _flightStartY + (_flightTargetY - _flightStartY) * ease;
+
+                // Quadratic bezier arc: B(t) = (1−t)²·P0 + 2(1−t)t·P1 + t²·P2 —
+                // the buddy swoops in a parabola instead of a straight line.
+                double omt = 1.0 - ease;
+                _dotX = omt * omt * _flightStartX + 2 * omt * ease * _flightControlX + ease * ease * _flightTargetX;
+                _dotY = omt * omt * _flightStartY + 2 * omt * ease * _flightControlY + ease * ease * _flightTargetY;
+
+                // Rotate to face the direction of travel: tangent of the bezier,
+                // B'(t) = 2(1−t)(P1−P0) + 2t(P2−P1). +90° because the triangle's
+                // tip points up at 0°.
+                double tanX = 2 * omt * (_flightControlX - _flightStartX) + 2 * ease * (_flightTargetX - _flightControlX);
+                double tanY = 2 * omt * (_flightControlY - _flightStartY) + 2 * ease * (_flightTargetY - _flightControlY);
+                DotRotate.Angle = Math.Atan2(tanY, tanX) * (180.0 / Math.PI) + 90.0;
 
                 // Scale pulse: grows to 1.3× at midpoint, back to 1× on landing
                 double scale = 1.0 + Math.Sin(p * Math.PI) * 0.3;
@@ -150,24 +222,41 @@ public partial class OverlayWindow : Window
                 if (p >= 1.0)
                 {
                     DotScale.ScaleX = DotScale.ScaleY = 1.0;
+                    DotRotate.Angle = -35.0; // back to the resting cursor angle
                     _dotVX = _dotVY = 0;
-                    // Flying dot hides; TargetPointer's center dot becomes the visual at target
-                    CursorFollower.Visibility = Visibility.Collapsed;
-                    _dotState = DotState.PointingAtTarget;
-                    OnArrivedAtTarget();
+
+                    if (_isReturningToCursor)
+                    {
+                        // Landed back at the cursor — resume normal following.
+                        _isReturningToCursor = false;
+                        _dotState = DotState.FollowingCursor;
+                    }
+                    else
+                    {
+                        // Arrived at the target — the buddy STAYS visible, pointing
+                        // at the element (original behaviour), and the speech bubble
+                        // starts streaming in.
+                        _dotState = DotState.PointingAtTarget;
+                        StartBubble(Utterances[Rng.Next(Utterances.Length)], holdSeconds: 3.0, now);
+                    }
                 }
                 break;
 
             case DotState.PointingAtTarget:
-                // Dot stays put — no position update needed
+                // Buddy stays put at the target — no position update needed
                 break;
         }
 
+        // ── Speech bubble: character streaming + hold + fly-back ─────────────
+        UpdateBubble(now);
+
         // ── Update element positions ────────────────────────────────────────
 
-        // Cursor follower (center of 32×32 grid sits on _dotX, _dotY)
-        System.Windows.Controls.Canvas.SetLeft(CursorFollower, _dotX - 16);
-        System.Windows.Controls.Canvas.SetTop(CursorFollower,  _dotY - 16);
+        // Move the dot with a RenderTransform (composition-level) rather than
+        // Canvas.SetLeft/Top — no per-frame layout/arrange pass, which is the
+        // single biggest smoothness win for cursor following in WPF.
+        DotTranslate.X = _dotX - 16;
+        DotTranslate.Y = _dotY - 16;
 
         // Waveform bars: bottom of 20 px container sits at _dotY so bars grow upward from there
         if (WaveformBars.Visibility == Visibility.Visible)
@@ -232,24 +321,23 @@ public partial class OverlayWindow : Window
                     WaveformBars.Visibility      = Visibility.Collapsed;
                     ProcessingSpinner.Visibility = Visibility.Collapsed;
                     StopSpinner();
-                    if (_dotState != DotState.FollowingCursor)
-                        ResumeFollowingCursor(cancelPointer: true);
-                    else
-                        CursorFollower.Visibility = Visibility.Visible;
+                    // An in-progress pointing sequence (bubble hold → return arc)
+                    // self-resolves back to cursor following — don't cut it short.
+                    CursorFollower.Visibility = Visibility.Visible;
+                    // Drawings linger a few seconds after Bru stops talking, then fade.
+                    ScheduleAnnotationLinger();
                     break;
 
                 case AppState.Listening:
-                    _labelTimer?.Stop();
                     ProcessingSpinner.Visibility = Visibility.Collapsed;
                     StopSpinner();
-                    // Cancel any in-progress pointing and return to spring following
+                    // New question: clear drawings instantly, cancel the welcome
+                    // bubble and any in-progress pointing/flight
+                    ClearAnnotations(instant: true);
+                    _welcomeActive = false;
+                    HideBubble();
                     if (_dotState != DotState.FollowingCursor)
-                    {
-                        TargetPointer.Visibility = Visibility.Collapsed;
-                        TargetLabel.Visibility   = Visibility.Collapsed;
-                        _dotVX = _dotVY = 0;
-                        _dotState = DotState.FollowingCursor;
-                    }
+                        ResumeFollowingCursor(cancelPointer: true);
                     // Replace dot with animated waveform bars
                     CursorFollower.Visibility = Visibility.Collapsed;
                     WaveformBars.Visibility   = Visibility.Visible;
@@ -275,8 +363,9 @@ public partial class OverlayWindow : Window
     }
 
     /// <summary>
-    /// Animates the cursor dot from its current position to the target screen coordinates
-    /// returned by the Computer Use API. Shows the pulse ring immediately; the dot flies there.
+    /// Flies the buddy along a bezier arc to the target screen coordinates.
+    /// It lands beside the element (+8,+12 offset like the original), streams a
+    /// speech bubble, holds, then arcs back to the cursor.
     /// </summary>
     public void ShowTargetAt(double physX, double physY, string label)
     {
@@ -286,87 +375,386 @@ public partial class OverlayWindow : Window
             double wpfX = physX / dpiScale - Left;
             double wpfY = physY / dpiScale - Top;
 
-            // Pulse ring appears at target immediately
-            System.Windows.Controls.Canvas.SetLeft(TargetPointer, wpfX - 24);
-            System.Windows.Controls.Canvas.SetTop(TargetPointer,  wpfY - 24);
-            TargetPointer.Visibility = Visibility.Visible;
-            AnimatePulse();
+            // Land beside the element rather than on top of it, clamped to screen.
+            wpfX = Math.Clamp(wpfX + 8, 20, Math.Max(20, ActualWidth - 20));
+            wpfY = Math.Clamp(wpfY + 12, 20, Math.Max(20, ActualHeight - 20));
 
-            // Begin flight from current dot position to target
-            _flightStartX  = _dotX;
-            _flightStartY  = _dotY;
-            _flightTargetX = wpfX;
-            _flightTargetY = wpfY;
-            _flightElapsed = 0;
-            _flightLabel   = label;
-
-            double dist = Math.Sqrt(
-                (_flightTargetX - _dotX) * (_flightTargetX - _dotX) +
-                (_flightTargetY - _dotY) * (_flightTargetY - _dotY));
-            // Duration: 0.5–1.4 s based on distance (from original Clicky)
-            _flightDuration = Math.Clamp(dist / 800.0, 0.5, 1.4);
-
-            _labelTimer?.Stop();
+            _flightLabel = label;
+            _isReturningToCursor = false;
+            _welcomeActive = false;
+            HideBubble();
+            BeginFlightTo(wpfX, wpfY);
             CursorFollower.Visibility = Visibility.Visible;
-            _dotState = DotState.FlyingToTarget;
         });
     }
 
-    // Called on the Dispatcher thread when the flight animation completes
-    private void OnArrivedAtTarget()
+    /// <summary>Sets up a quadratic-bezier arc flight from the buddy's current position.</summary>
+    private void BeginFlightTo(double targetX, double targetY)
     {
-        // Label positioned to the right of and slightly below the target center
-        System.Windows.Controls.Canvas.SetLeft(TargetLabel, _flightTargetX + 20);
-        System.Windows.Controls.Canvas.SetTop(TargetLabel,  _flightTargetY + 12);
+        _flightStartX  = _dotX;
+        _flightStartY  = _dotY;
+        _flightTargetX = targetX;
+        _flightTargetY = targetY;
+        _flightElapsed = 0;
 
-        // Use a random utterance phrase (same pool as original Clicky)
-        TargetLabelText.Text = Utterances[Rng.Next(Utterances.Length)];
-        TargetLabel.Opacity    = 0;
+        double dist = Math.Sqrt(
+            (targetX - _dotX) * (targetX - _dotX) +
+            (targetY - _dotY) * (targetY - _dotY));
+
+        // Duration scales with distance: short hops quick, long flights dramatic.
+        _flightDuration = Math.Clamp(dist / 800.0, 0.6, 1.4);
+
+        // Control point: midpoint raised so the buddy swoops in a parabolic arc.
+        double arcHeight = Math.Min(dist * 0.2, 80.0);
+        _flightControlX = (_dotX + targetX) / 2.0;
+        _flightControlY = (_dotY + targetY) / 2.0 - arcHeight;
+
+        _dotState = DotState.FlyingToTarget;
+    }
+
+    // ── Speech bubble (character streaming, ported from the original) ────────
+
+    private double _bubbleHoldSeconds = 3.0;
+
+    /// <summary>
+    /// Starts streaming a phrase into the bubble character by character with a
+    /// pop-in scale bounce. After the hold, the bubble hides and (when pointing)
+    /// the buddy flies back to the cursor.
+    /// </summary>
+    private void StartBubble(string text, double holdSeconds, double now)
+    {
+        _bubbleFullText      = text;
+        _bubbleShownChars    = 0;
+        _nextCharAtSeconds   = now;
+        _bubbleHideAtSeconds = double.MaxValue; // set once fully streamed
+        _bubbleHoldSeconds   = holdSeconds;
+
+        TargetLabelText.Text = "";
+        TargetLabel.BeginAnimation(UIElement.OpacityProperty, null);
+        TargetLabel.Opacity    = 1;
         TargetLabel.Visibility = Visibility.Visible;
 
-        // Fade in
-        var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.3));
-        TargetLabel.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+        System.Windows.Controls.Canvas.SetLeft(TargetLabel, _dotX + 12);
+        System.Windows.Controls.Canvas.SetTop(TargetLabel,  _dotY + 14);
 
-        // Hold for 3 s, then fade out and resume cursor following
-        _labelTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3.3) };
-        _labelTimer.Tick += (_, _) =>
+        // Pop-in: 0.5 → 1.0 with a springy overshoot (the "materializing" bounce).
+        var pop = new DoubleAnimation(0.5, 1.0, TimeSpan.FromSeconds(0.35))
         {
-            _labelTimer!.Stop();
-            var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromSeconds(0.5));
-            fadeOut.Completed += (_, _) =>
-            {
-                TargetLabel.Visibility = Visibility.Collapsed;
-                ResumeFollowingCursor(cancelPointer: true);
-            };
-            TargetLabel.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+            EasingFunction = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.6 },
         };
-        _labelTimer.Start();
+        LabelScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
+        LabelScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
+    }
+
+    /// <summary>Per-frame bubble driver: streaming rhythm, hold countdown, hide + return.</summary>
+    private void UpdateBubble(double now)
+    {
+        if (TargetLabel.Visibility != Visibility.Visible || _bubbleFullText.Length == 0)
+            return;
+
+        // The welcome bubble follows the buddy while it trails the cursor.
+        if (_welcomeActive)
+        {
+            System.Windows.Controls.Canvas.SetLeft(TargetLabel, _dotX + 12);
+            System.Windows.Controls.Canvas.SetTop(TargetLabel,  _dotY + 14);
+        }
+
+        // Stream the next character at a natural speaking rhythm (30–60 ms/char).
+        if (_bubbleShownChars < _bubbleFullText.Length && now >= _nextCharAtSeconds)
+        {
+            _bubbleShownChars++;
+            TargetLabelText.Text = _bubbleFullText[.._bubbleShownChars];
+            _nextCharAtSeconds = now + 0.03 + Rng.NextDouble() * 0.03;
+
+            if (_bubbleShownChars == _bubbleFullText.Length)
+                _bubbleHideAtSeconds = now + _bubbleHoldSeconds;
+        }
+
+        if (now >= _bubbleHideAtSeconds)
+        {
+            HideBubble();
+            if (_welcomeActive)
+                _welcomeActive = false;
+            else if (_dotState == DotState.PointingAtTarget)
+                StartReturnFlight();
+        }
+    }
+
+    private void HideBubble()
+    {
+        _bubbleFullText      = "";
+        _bubbleShownChars    = 0;
+        _bubbleHideAtSeconds = double.MaxValue;
+        TargetLabelText.Text = "";
+        TargetLabel.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>Arcs the buddy from the target back to the cursor's current position.</summary>
+    private void StartReturnFlight()
+    {
+        Win32.GetCursorPos(out var pt);
+        var dpiScale = CoordinateHelper.GetDpiScale();
+        double cx = pt.X / dpiScale - Left;
+        double cy = pt.Y / dpiScale - Top;
+
+        _returnStartCursorX = cx;
+        _returnStartCursorY = cy;
+        _isReturningToCursor = true;
+        BeginFlightTo(cx + CursorOffsetX, cy + CursorOffsetY);
     }
 
     /// <summary>
-    /// Hides the target pointer and label, cancels any pending timer,
-    /// and resumes spring cursor following. The spring naturally animates
-    /// the dot back to the cursor from wherever it currently sits.
+    /// Cancels any pointing/flight in progress and resumes spring cursor following.
+    /// The spring naturally animates the buddy back from wherever it sits.
     /// </summary>
     private void ResumeFollowingCursor(bool cancelPointer)
     {
-        _labelTimer?.Stop();
-
         if (cancelPointer)
         {
             TargetPointer.Visibility = Visibility.Collapsed;
-            TargetLabel.Visibility   = Visibility.Collapsed;
             TargetLabel.BeginAnimation(UIElement.OpacityProperty, null);
+            HideBubble();
         }
 
+        _isReturningToCursor = false;
+        _welcomeActive = false;
+        DotRotate.Angle = -35.0;
+        DotScale.ScaleX = DotScale.ScaleY = 1.0;
         _dotVX    = 0;
         _dotVY    = 0;
         _dotState = DotState.FollowingCursor;
 
-        // Show dot only if the app isn't in a state that uses a different indicator
+        // Show the buddy only if the app isn't in a state with its own indicator
         if (_appState != AppState.Listening && _appState != AppState.Processing)
             CursorFollower.Visibility = Visibility.Visible;
+    }
+
+    // ── Screen drawings (highlight boxes, arrows, lines, notes) ─────────────
+    // Each annotation "sketches itself" in via a stroke-dash animation, staggered
+    // so Bru appears to draw step by step. Everything runs on the composition
+    // clock (BeginTime offsets + keyframes) — no starvable timers.
+
+    private int _annotationGeneration; // guards stale fade-out completions
+
+    private static readonly System.Windows.Media.Brush AnnotationBrush = CreateAnnotationBrush();
+
+    private static System.Windows.Media.Brush CreateAnnotationBrush()
+    {
+        var b = new SolidColorBrush(WpfColor.FromRgb(0x00, 0xE5, 0xFF));
+        b.Freeze();
+        return b;
+    }
+
+    public void ShowAnnotations(IReadOnlyList<ScreenAnnotation> annotations)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            ClearAnnotations(instant: true);
+            _annotationGeneration++;
+
+            var dpi = CoordinateHelper.GetDpiScale();
+            int index = 0;
+            foreach (var a in annotations.Take(8))
+            {
+                double delay = index * 0.45; // Bru draws one thing at a time
+                switch (a.Kind)
+                {
+                    case AnnotationKind.Box:
+                        AddSketchedShape(BuildBoxGeometry(a, dpi), 2 * ((a.Bx + a.By) / dpi), delay);
+                        if (a.Label.Length > 0)
+                            AddChip(a.Label, a.Ax / dpi - Left, a.Ay / dpi - Top - 26, delay + 0.25);
+                        break;
+
+                    case AnnotationKind.Arrow:
+                        AddSketchedShape(BuildArrowGeometry(a, dpi, out double arrowLen), arrowLen, delay);
+                        if (a.Label.Length > 0)
+                            AddChip(a.Label, a.Bx / dpi - Left + 10, a.By / dpi - Top + 6, delay + 0.25);
+                        break;
+
+                    case AnnotationKind.Line:
+                        AddSketchedShape(BuildLineGeometry(a, dpi, out double lineLen), lineLen, delay);
+                        break;
+
+                    case AnnotationKind.Note:
+                        AddChip(a.Label, a.Ax / dpi - Left, a.Ay / dpi - Top, delay);
+                        break;
+                }
+                index++;
+            }
+        });
+    }
+
+    /// <summary>Fades out (or instantly removes) all current drawings.</summary>
+    public void ClearAnnotations(bool instant = false)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _annotationGeneration++;
+            if (instant || AnnotationCanvas.Children.Count == 0)
+            {
+                AnnotationCanvas.Children.Clear();
+                AnnotationCanvas.BeginAnimation(OpacityProperty, null);
+                AnnotationCanvas.Opacity = 1;
+                return;
+            }
+
+            int gen = _annotationGeneration;
+            var fade = new DoubleAnimation(1, 0, TimeSpan.FromSeconds(0.4));
+            fade.Completed += (_, _) =>
+            {
+                if (gen != _annotationGeneration) return;
+                AnnotationCanvas.Children.Clear();
+                AnnotationCanvas.BeginAnimation(OpacityProperty, null);
+                AnnotationCanvas.Opacity = 1;
+            };
+            AnnotationCanvas.BeginAnimation(OpacityProperty, fade);
+        });
+    }
+
+    /// <summary>After Bru finishes talking, drawings linger then fade on their own.</summary>
+    private void ScheduleAnnotationLinger()
+    {
+        if (AnnotationCanvas.Children.Count == 0) return;
+
+        int gen = _annotationGeneration;
+        var anim = new DoubleAnimationUsingKeyFrames();
+        anim.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+        anim.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(8.0))));
+        anim.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(8.6))));
+        anim.Completed += (_, _) =>
+        {
+            if (gen != _annotationGeneration) return;
+            AnnotationCanvas.Children.Clear();
+            AnnotationCanvas.BeginAnimation(OpacityProperty, null);
+            AnnotationCanvas.Opacity = 1;
+        };
+        AnnotationCanvas.BeginAnimation(OpacityProperty, anim);
+    }
+
+    // ── Geometry builders (physical px → WPF units, window-relative) ────────
+
+    private System.Windows.Media.Geometry BuildBoxGeometry(ScreenAnnotation a, double dpi)
+    {
+        var rect = new Rect(a.Ax / dpi - Left, a.Ay / dpi - Top, a.Bx / dpi, a.By / dpi);
+        return new RectangleGeometry(rect, 8, 8);
+    }
+
+    private System.Windows.Media.Geometry BuildLineGeometry(ScreenAnnotation a, double dpi, out double length)
+    {
+        var p1 = new System.Windows.Point(a.Ax / dpi - Left, a.Ay / dpi - Top);
+        var p2 = new System.Windows.Point(a.Bx / dpi - Left, a.By / dpi - Top);
+        length = (p2 - p1).Length;
+        return new LineGeometry(p1, p2);
+    }
+
+    private System.Windows.Media.Geometry BuildArrowGeometry(ScreenAnnotation a, double dpi, out double length)
+    {
+        var tail = new System.Windows.Point(a.Ax / dpi - Left, a.Ay / dpi - Top);
+        var tip  = new System.Windows.Point(a.Bx / dpi - Left, a.By / dpi - Top);
+        var dir  = tip - tail;
+        length = dir.Length;
+        if (length < 1) { length = 1; dir = new Vector(1, 0); }
+        dir.Normalize();
+
+        // Arrowhead: two 14px barbs at ±28° off the shaft direction
+        const double headLen = 14;
+        var back = -dir;
+        var left  = RotateVector(back, +28) * headLen;
+        var right = RotateVector(back, -28) * headLen;
+
+        var g = new StreamGeometry();
+        using (var ctx = g.Open())
+        {
+            ctx.BeginFigure(tail, false, false);
+            ctx.LineTo(tip, true, true);
+            ctx.BeginFigure(tip + left, false, false);
+            ctx.LineTo(tip, true, true);
+            ctx.LineTo(tip + right, true, true);
+        }
+        g.Freeze();
+        length += headLen * 2;
+        return g;
+    }
+
+    private static Vector RotateVector(Vector v, double degrees)
+    {
+        double r = degrees * Math.PI / 180.0;
+        return new Vector(
+            v.X * Math.Cos(r) - v.Y * Math.Sin(r),
+            v.X * Math.Sin(r) + v.Y * Math.Cos(r));
+    }
+
+    // ── Element factories ────────────────────────────────────────────────────
+
+    /// <summary>Adds a stroke that draws itself in (dash-offset animation) after a delay.</summary>
+    private void AddSketchedShape(System.Windows.Media.Geometry geometry, double strokeLength, double delaySeconds)
+    {
+        const double thickness = 2.5;
+        double dashUnits = Math.Max(1, strokeLength / thickness);
+
+        var path = new System.Windows.Shapes.Path
+        {
+            Data = geometry,
+            Stroke = AnnotationBrush,
+            StrokeThickness = thickness,
+            StrokeDashArray = new DoubleCollection { dashUnits, dashUnits },
+            StrokeDashOffset = dashUnits,
+            StrokeDashCap = PenLineCap.Round,
+            Opacity = 0,
+            Effect = new DropShadowEffect { Color = WpfColor.FromRgb(0x00, 0xE5, 0xFF), BlurRadius = 8, ShadowDepth = 0, Opacity = 0.55 },
+            IsHitTestVisible = false,
+        };
+        AnnotationCanvas.Children.Add(path);
+
+        var begin = TimeSpan.FromSeconds(delaySeconds);
+        path.BeginAnimation(OpacityProperty,
+            new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.12)) { BeginTime = begin });
+        path.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty,
+            new DoubleAnimation(dashUnits, 0, TimeSpan.FromSeconds(0.55))
+            {
+                BeginTime = begin,
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            });
+    }
+
+    /// <summary>Adds a small cyan text chip (labels, notes, step numbers).</summary>
+    private void AddChip(string text, double x, double y, double delaySeconds)
+    {
+        var chip = new System.Windows.Controls.Border
+        {
+            Background = AnnotationBrush,
+            CornerRadius = new CornerRadius(5),
+            Padding = new Thickness(7, 3, 7, 3),
+            Opacity = 0,
+            IsHitTestVisible = false,
+            RenderTransformOrigin = new System.Windows.Point(0, 0.5),
+            RenderTransform = new ScaleTransform(0.6, 0.6),
+            Effect = new DropShadowEffect { Color = WpfColor.FromRgb(0x00, 0xE5, 0xFF), BlurRadius = 7, ShadowDepth = 0, Opacity = 0.5 },
+            Child = new System.Windows.Controls.TextBlock
+            {
+                Text = text,
+                Foreground = new SolidColorBrush(WpfColor.FromRgb(0x06, 0x20, 0x28)),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new System.Windows.Media.FontFamily("Segoe UI"),
+                MaxWidth = 240,
+                TextWrapping = TextWrapping.Wrap,
+            },
+        };
+        System.Windows.Controls.Canvas.SetLeft(chip, Math.Max(2, x));
+        System.Windows.Controls.Canvas.SetTop(chip, Math.Max(2, y));
+        AnnotationCanvas.Children.Add(chip);
+
+        var begin = TimeSpan.FromSeconds(delaySeconds);
+        chip.BeginAnimation(OpacityProperty,
+            new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.18)) { BeginTime = begin });
+        var pop = new DoubleAnimation(0.6, 1.0, TimeSpan.FromSeconds(0.3))
+        {
+            BeginTime = begin,
+            EasingFunction = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.5 },
+        };
+        ((ScaleTransform)chip.RenderTransform).BeginAnimation(ScaleTransform.ScaleXProperty, pop);
+        ((ScaleTransform)chip.RenderTransform).BeginAnimation(ScaleTransform.ScaleYProperty, pop);
     }
 
     // ── Feedback bubble (silent failures, error messages) ───────────────────
@@ -379,7 +767,7 @@ public partial class OverlayWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            _labelTimer?.Stop();
+            // Cancel any pending label timer (e.g. from a prior pointing label).
 
             // Position near current dot location
             System.Windows.Controls.Canvas.SetLeft(TargetLabel, _dotX + 20);
@@ -389,19 +777,22 @@ public partial class OverlayWindow : Window
             TargetLabel.Opacity     = 0;
             TargetLabel.Visibility  = Visibility.Visible;
 
-            var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.25));
-            TargetLabel.BeginAnimation(UIElement.OpacityProperty, fadeIn);
-
-            // Hold 3 s then fade out; don't change dot state
-            _labelTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3.25) };
-            _labelTimer.Tick += (_, _) =>
+            // Drive fade-in → hold → fade-out as ONE keyframe animation on the
+            // composition clock. A DispatcherTimer at default (Background) priority
+            // can be starved indefinitely by the Render-priority cursor-follow timer,
+            // which left this label stuck on screen. Keyframes can't be starved.
+            const double holdSeconds = 3.0;
+            var anim = new DoubleAnimationUsingKeyFrames();
+            anim.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            anim.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.25))));
+            anim.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.25 + holdSeconds))));
+            anim.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.75 + holdSeconds))));
+            anim.Completed += (_, _) =>
             {
-                _labelTimer!.Stop();
-                var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromSeconds(0.5));
-                fadeOut.Completed += (_, _) => TargetLabel.Visibility = Visibility.Collapsed;
-                TargetLabel.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+                TargetLabel.Visibility = Visibility.Collapsed;
+                TargetLabel.BeginAnimation(UIElement.OpacityProperty, null);
             };
-            _labelTimer.Start();
+            TargetLabel.BeginAnimation(UIElement.OpacityProperty, anim);
         });
     }
 
@@ -431,12 +822,12 @@ public partial class OverlayWindow : Window
             // Color: blue → light pink → blue over the same duration
             var colorAnim = new ColorAnimationUsingKeyFrames();
             colorAnim.KeyFrames.Add(new LinearColorKeyFrame(
-                WpfColor.FromRgb(0x33, 0x80, 0xFF), KeyTime.FromTimeSpan(TimeSpan.Zero)));
+                WpfColor.FromRgb(0x00, 0xE5, 0xFF), KeyTime.FromTimeSpan(TimeSpan.Zero)));
             colorAnim.KeyFrames.Add(new EasingColorKeyFrame(
                 WpfColor.FromRgb(0xFF, 0x8A, 0xBA), KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.18)))
                 { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
             colorAnim.KeyFrames.Add(new LinearColorKeyFrame(
-                WpfColor.FromRgb(0x33, 0x80, 0xFF), KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.5))));
+                WpfColor.FromRgb(0x00, 0xE5, 0xFF), KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.5))));
 
             SpinnerStrokeBrush.BeginAnimation(SolidColorBrush.ColorProperty, colorAnim);
         });

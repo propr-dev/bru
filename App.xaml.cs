@@ -16,7 +16,9 @@ public partial class App
     private CompanionManager? _companion;
     private OverlayWindow? _overlay;
     private MainWindow? _mainWindow;
+    private StatusWindow? _statusWindow;
     private AppSettings _settings = new();
+    private System.Threading.Mutex? _singleInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -28,13 +30,15 @@ public partial class App
 
         Logger.Log("=== Clicky starting ===");
 
-        // Single-instance guard
-        var mutex = new System.Threading.Mutex(true, "ClickyWindows_SingleInstance", out bool isFirst);
+        // Single-instance guard. The mutex MUST be kept alive for the process lifetime:
+        // as a local it becomes garbage-collectable, the OS handle is released, and the
+        // guard silently stops working mid-session.
+        _singleInstanceMutex = new System.Threading.Mutex(true, "ClickyWindows_SingleInstance", out bool isFirst);
         if (!isFirst)
         {
             System.Windows.MessageBox.Show(
-                "Clicky is already running. Check the system tray.",
-                "Clicky", MessageBoxButton.OK, MessageBoxImage.Information);
+                "Bru is already running. Check the system tray.",
+                "Bru", MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown();
             return;
         }
@@ -57,11 +61,24 @@ public partial class App
         MainWindow = _mainWindow;
         _mainWindow.Show();
 
+        // The small Bru panel — status + permission approvals
+        _statusWindow = new StatusWindow(_companion);
+        _statusWindow.Show();
+
         SetupTrayIcon();
 
         Logger.Log($"Clicky ready. Hotkey: {GetHotkeyDescription()}");
         Logger.Log($"Log file: {Logger.LogFilePath}");
-        ShowBalloon($"Clicky ready! Hold {GetHotkeyDescription()} to talk.", ToolTipIcon.Info);
+        ShowBalloon($"Bru is ready! Hold {GetHotkeyDescription()} to talk.", ToolTipIcon.Info);
+    }
+
+    private void ShowStatusWindow()
+    {
+        if (_statusWindow == null) return;
+        _statusWindow.Show();
+        if (_statusWindow.WindowState == WindowState.Minimized)
+            _statusWindow.WindowState = WindowState.Normal;
+        _statusWindow.Activate();
     }
 
     private bool ValidateSettings()
@@ -74,7 +91,7 @@ public partial class App
             System.Windows.MessageBox.Show(
                 $"Please add your API keys to:\n{path}\n\n" +
                 "Required fields:\n• AnthropicApiKey\n• ElevenLabsApiKey\n• AssemblyAiApiKey",
-                "Clicky — Setup Required",
+                "Bru — Setup Required",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
         }
@@ -97,20 +114,21 @@ public partial class App
         _trayIcon = new NotifyIcon
         {
             Icon = icon,
-            Text = $"Clicky — Hold {hotkeyDesc} to talk",
+            Text = $"Bru — Hold {hotkeyDesc} to talk",
             Visible = true,
         };
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add($"Clicky  |  Hold {hotkeyDesc} to talk").Enabled = false;
+        menu.Items.Add($"Bru  |  Hold {hotkeyDesc} to talk").Enabled = false;
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Show Bru window", null, (_, _) => ShowStatusWindow());
         menu.Items.Add("View Log", null, (_, _) => OpenLog());
         menu.Items.Add("Open Settings", null, (_, _) => OpenSettingsFolder());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Quit Clicky", null, (_, _) => QuitApp());
+        menu.Items.Add("Quit Bru", null, (_, _) => QuitApp());
 
         _trayIcon.ContextMenuStrip = menu;
-        _trayIcon.DoubleClick += (_, _) => OpenLog();
+        _trayIcon.DoubleClick += (_, _) => ShowStatusWindow();
     }
 
     private string GetHotkeyDescription()

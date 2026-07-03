@@ -1,13 +1,25 @@
 {
   "AnthropicApiKey": "sk-ant-YOUR_KEY_HERE",
-  "ElevenLabsApiKey": "YOUR_ELEVENLABS_KEY_HERE",
-  "ElevenLabsVoiceId": "21m00Tcm4TlvDq8ikWAM",
   "AssemblyAiApiKey": "YOUR_ASSEMBLYAI_KEY_HERE",
 
-  "ClaudeModel": "claude-sonnet-4-6",
+  "TtsEngine": "windows",
+  "WindowsTtsVoice": "",
+  "WindowsTtsRate": 0,
+  "WindowsTtsVolume": 100,
 
-  "HotkeyModifiers": 6,
+  "ElevenLabsApiKey": "",
+  "ElevenLabsVoiceId": "",
+
+  "ClaudeModel": "claude-haiku-4-5",
+  "PointingModel": "claude-sonnet-4-6",
+
+  "HotkeyModifiers": 2,
   "HotkeyVirtualKey": 32,
+
+  "FileAccessEnabled": true,
+  "AllowedFolders": [
+    "C:\\Users\\YOURNAME\\OneDrive\\BRU"
+  ],
 
   "ClaudeProxyUrl": "",
   "ElevenLabsProxyUrl": "",

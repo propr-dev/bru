@@ -12,6 +12,10 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>ClickyWindows</AssemblyName>
     <RootNamespace>ClickyWindows</RootNamespace>
+    <Product>Bru</Product>
+    <AssemblyTitle>Bru — AI Screen Companion</AssemblyTitle>
+    <Version>1.0.0</Version>
+    <Authors>Daiyin Naicker</Authors>
     <Platforms>x64</Platforms>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Per-monitor DPI v2 — WPF handles this; must NOT also be in app.manifest -->

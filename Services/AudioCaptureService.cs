@@ -40,9 +40,25 @@ public class AudioCaptureService : IDisposable
         _running = false;
 
         Logger.Log($"[Audio] Stopping. Total chunks sent to ASR: {_chunksSent}");
-        _capture?.StopRecording();
-        _capture?.Dispose();
+
+        var capture = _capture;
         _capture = null;
+        if (capture == null) return;
+
+        // Detach our handler so no more chunks fire during shutdown.
+        capture.DataAvailable -= OnDataAvailable;
+
+        // Dispose ONLY once the capture thread has fully wound down.
+        // Calling Dispose() inline right after StopRecording() blocks the calling
+        // (UI) thread on the capture thread's shutdown, while that thread is trying
+        // to post its RecordingStopped notification back to the same UI thread —
+        // a deadlock that freezes the whole app once real audio has been flowing.
+        capture.RecordingStopped += (_, _) =>
+        {
+            capture.Dispose();
+            Logger.Log("[Audio] Capture stopped");
+        };
+        capture.StopRecording();
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)

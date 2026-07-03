@@ -10,13 +10,11 @@ namespace ClickyWindows.Helpers;
 /// </summary>
 internal static class CoordinateHelper
 {
-    // Claude Computer Use returns coordinates in one of these standard resolutions
-    private static readonly (int w, int h)[] ComputerUseResolutions =
-    [
-        (1024, 768),
-        (1280, 800),
-        (1366, 768),
-    ];
+    // Computer Use works best on an image no larger than ~1280×800. We scale the
+    // screenshot UNIFORMLY to fit inside this box (never upscaling), preserving aspect
+    // ratio so the picture isn't distorted — distortion and detail loss both hurt aim.
+    private const double CuMaxWidth  = 1280.0;
+    private const double CuMaxHeight = 800.0;
 
     /// <summary>
     /// Gets the DPI scale factor for the primary screen (physical pixels / WPF DIPs).
@@ -63,21 +61,12 @@ internal static class CoordinateHelper
 
     internal static (int w, int h) DetectComputerUseResolution(int screenW, int screenH)
     {
-        double screenRatio = (double)screenW / screenH;
-        (int w, int h) best = ComputerUseResolutions[0];
-        double bestDiff = double.MaxValue;
+        if (screenW <= 0 || screenH <= 0) return ((int)CuMaxWidth, (int)CuMaxHeight);
 
-        foreach (var res in ComputerUseResolutions)
-        {
-            double ratio = (double)res.w / res.h;
-            double diff = Math.Abs(ratio - screenRatio);
-            if (diff < bestDiff)
-            {
-                bestDiff = diff;
-                best = res;
-            }
-        }
-
-        return best;
+        // Uniform scale to fit inside the CU box; never upscale beyond native.
+        double scale = Math.Min(Math.Min(CuMaxWidth / screenW, CuMaxHeight / screenH), 1.0);
+        int w = Math.Max(1, (int)Math.Round(screenW * scale));
+        int h = Math.Max(1, (int)Math.Round(screenH * scale));
+        return (w, h);
     }
 }
