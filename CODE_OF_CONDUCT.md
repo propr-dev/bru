@@ -51,8 +51,10 @@ as an appointed representative at an online or offline event.
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behaviour may be reported to
-the community leaders responsible for enforcement at **«your contact email»**.
+Instances of abusive, harassing, or otherwise unacceptable behaviour may be reported
+privately to the maintainer, [@daiyin-naicker](https://github.com/daiyin-naicker), through
+GitHub. If the report concerns a security matter as well, follow [SECURITY.md](./SECURITY.md)
+instead.
 
 All complaints will be reviewed and investigated promptly and fairly. All community
 leaders are obligated to respect the privacy and security of the reporter of any incident.
