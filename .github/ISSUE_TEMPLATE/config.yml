@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/propr-dev/bru/security/advisories/new
+    about: Do not open a public issue. Report privately — see SECURITY.md.
+  - name: Upstream project (clicky_windows)
+    url: https://github.com/emreyilmaz46/clicky_windows
+    about: Bru is a fork. If the bug also happens in the original, report it there too.
+  - name: Original project (Clicky by Farzaa)
+    url: https://github.com/farzaa/clicky
+    about: The macOS project this all descends from.

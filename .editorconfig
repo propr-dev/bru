@@ -1,0 +1,88 @@
+# EditorConfig — https://editorconfig.org
+# Codifies the conventions already used throughout this codebase.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,yml,yaml,md}]
+indent_size = 2
+
+[*.md]
+# Trailing double-space is a hard line break in Markdown
+trim_trailing_whitespace = false
+
+[*.{csproj,manifest,xaml}]
+indent_size = 2
+
+[*.cs]
+indent_size = 4
+
+# ── Language conventions ──────────────────────────────────────────────────
+
+# File-scoped namespaces (used throughout: `namespace ClickyWindows.Services;`)
+csharp_style_namespace_declarations = file_scoped:warning
+
+# `var` only when the type is apparent from the right-hand side
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:suggestion
+
+# Expression-bodied members — used for simple property accessors like `Files => _files`
+csharp_style_expression_bodied_properties = true:suggestion
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+
+# Modern C# the codebase already relies on
+csharp_style_prefer_primary_constructors = false:suggestion
+csharp_style_pattern_matching_over_is_with_cast_check = true:suggestion
+csharp_style_pattern_matching_over_as_with_null_check = true:suggestion
+csharp_prefer_simple_using_statement = true:suggestion
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+
+# `this.` is not used anywhere in this codebase
+dotnet_style_qualification_for_field = false:warning
+dotnet_style_qualification_for_property = false:warning
+dotnet_style_qualification_for_method = false:warning
+dotnet_style_qualification_for_event = false:warning
+
+# Nullable is enabled project-wide — treat these as real problems
+dotnet_diagnostic.CS8600.severity = warning
+dotnet_diagnostic.CS8602.severity = warning
+dotnet_diagnostic.CS8618.severity = warning
+
+# ── Naming: private fields are _camelCase ─────────────────────────────────
+
+dotnet_naming_rule.private_fields_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore.style = underscore_camel_case
+dotnet_naming_rule.private_fields_underscore.severity = warning
+
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_fields.required_modifiers =
+
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+
+# Constants and static readonly are PascalCase (e.g. `SettingsPath`)
+dotnet_naming_rule.const_pascal.symbols = constants_and_statics
+dotnet_naming_rule.const_pascal.style = pascal_case_style
+dotnet_naming_rule.const_pascal.severity = suggestion
+
+dotnet_naming_symbols.constants_and_statics.applicable_kinds = field
+dotnet_naming_symbols.constants_and_statics.required_modifiers = const,static_readonly
+
+dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+
+# Public members are PascalCase
+dotnet_naming_rule.public_members_pascal.symbols = public_members
+dotnet_naming_rule.public_members_pascal.style = pascal_case_style
+dotnet_naming_rule.public_members_pascal.severity = warning
+
+dotnet_naming_symbols.public_members.applicable_kinds = property,method,event,class,struct,interface,enum
+dotnet_naming_symbols.public_members.applicable_accessibilities = public

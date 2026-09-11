@@ -1,0 +1,28 @@
+# Normalise line endings: LF in the repository, native in the working tree.
+* text=auto
+
+# Source
+*.cs      text diff=csharp
+*.xaml    text
+*.csproj  text
+*.sln     text eol=crlf
+*.manifest text
+*.json    text
+*.md      text
+*.yml     text
+*.yaml    text
+
+# Binaries — never diff or normalise these
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.mp3     binary
+*.wav     binary
+*.exe     binary
+*.dll     binary
+*.pdb     binary
+
+# Keep generated lockfiles out of diffs
+*.lockb   binary

@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest something Bru should be able to do
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation you are in, not the solution you have in mind.
+      placeholder: When I am working across two monitors, I have to repeat which screen I mean every time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should Bru do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Bru would this touch?
+      options:
+        - Pointing
+        - Voice in (speech recognition)
+        - Voice out (text to speech)
+        - Screen vision
+        - File assistant
+        - The Bru window / UI
+        - Settings and configuration
+        - Local-language support
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Including any workaround you currently use.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      description: |
+        Bru is deliberately narrow — it watches the screen, listens, answers, points,
+        and copies files inside folders you allow. Requests that widen that surface
+        (writing files, controlling apps, running commands) are unlikely to be accepted.
+      options:
+        - label: This fits within what Bru already does, or I have explained why it should not
+          required: true

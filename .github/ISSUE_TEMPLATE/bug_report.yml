@@ -1,0 +1,112 @@
+name: Bug report
+description: Something in Bru does not work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Before you post:** `clicky.log` can contain the text of what you said and
+        what was on your screen. Read any excerpt before pasting it, and redact
+        anything private. Never paste an API key.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect Bru to do, and what did it do instead?
+      placeholder: I asked Bru to point at the Save button. It spoke the answer but the dot landed on the toolbar instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open «application»
+        2. Hold Ctrl + Space and say "«what you said»"
+        3. Release
+        4. The dot lands in the wrong place
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Bru?
+      options:
+        - Pointing — the dot lands in the wrong place, or not at all
+        - Voice in — speech is not transcribed, or transcribed wrongly
+        - Voice out — no speech, wrong voice, or cut off
+        - Screen vision — Bru misreads what is on screen
+        - File assistant — listing, finding, or copying files
+        - The Bru window — UI, permissions, or the living core
+        - Hotkey — Ctrl + Space does not trigger
+        - Startup / crash
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Bru version
+      description: Right-click ClickyWindows.exe → Properties → Details, or the release you downloaded.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Press Win + R, run `winver`.
+      placeholder: "Windows 11 23H2 (22631.4317)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tts
+    attributes:
+      label: Voice engine
+      options:
+        - Windows SAPI (free, offline)
+        - ElevenLabs
+        - Not relevant to this bug
+    validations:
+      required: true
+
+  - type: input
+    id: models
+    attributes:
+      label: Models in use
+      description: The `ClaudeModel` and `PointingModel` values from your settings.json.
+      placeholder: "ClaudeModel: claude-haiku-4-5, PointingModel: claude-sonnet-4-6"
+
+  - type: input
+    id: displays
+    attributes:
+      label: Display setup
+      description: Pointing accuracy depends heavily on this — please be specific.
+      placeholder: "2 monitors, 2560x1440 @ 150% and 1920x1080 @ 100%"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        From `%APPDATA%\ClickyWindows\clicky.log`. Redact before pasting.
+        This is rendered as a code block, so no backticks needed.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have redacted API keys and anything private from the log excerpt above
+          required: true
+        - label: I searched existing issues and this has not already been reported
+          required: true

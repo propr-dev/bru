@@ -1,9 +1,14 @@
 # Build output
 bin/
 obj/
+publish/
+artifacts/
+*.binlog
 
-# Visual Studio / Rider
+# Visual Studio / Rider / VS Code
 .vs/
+.idea/
+.vscode/
 *.user
 *.suo
 *.userprefs
@@ -15,6 +20,21 @@ obj/
 **/packages/
 !**/packages/build/
 
+# ── Secrets ───────────────────────────────────────────────────────────────
+# The real settings file holds live API keys. It normally lives in
+# %APPDATA%\ClickyWindows\settings.json, but ignore it here too so a copy
+# made in the repo folder can never be committed by accident.
+settings.json
+!settings.example.json
+*.local.json
+.env
+.env.*
+
+# ── Runtime output ────────────────────────────────────────────────────────
+clicky.log
+*.log
+
 # OS
 Thumbs.db
 .DS_Store
+desktop.ini
