@@ -2,6 +2,8 @@
 
 > Bru sees your screen, hears your voice, answers out loud — and points to exactly what you asked about.
 
+*A fork of [clicky_windows](https://github.com/emreyilmaz46/clicky_windows) by emreyilmaz46, itself a Windows port of [Clicky](https://github.com/farzaa/clicky) by Farzaa. See [Credits](#credits) for what is theirs and what this fork adds.*
+
 Hold **Ctrl + Space**, speak, release. Bru captures your screen, transcribes your voice in real time, sends both to Claude, then speaks the answer back and flies a glowing cyan dot to the exact UI element you asked about. It can also find and copy files for you — but only inside folders you allow, and only after you approve each action.
 
 Built for the South African market: a free offline voice option, a cheaper AI mode, and (on the roadmap) local-language support.
